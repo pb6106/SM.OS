@@ -95,13 +95,14 @@ local function usage()
   print("  stop          - set reactor level to 0")
   print("  status        - print current status")
   print("  describe      - list component methods and sample (non-mutating) outputs")
-  print("  auto          - automatic safety + restart loop (opt-in behavior)")
+  print("  auto [preset] - automatic safety + restart loop (opt-in); optional preset from config")
+  print("  autopresets   - list available AUTO presets from config.lua")
   print("  monitor       - continuous monitoring + safety shutdown")
   print("  detect        - show which components were found")
 end
 
 -- main CLI
-local cmd = ...
+local cmd, preset = ...
 if not cmd then usage() return end
 detect()
 if cmd == "start" then
@@ -118,6 +119,12 @@ elseif cmd == "monitor" then
 elseif cmd == "auto" then
   detect()
   if not communicators or #communicators == 0 then print("No dfc_communicator found") return end
+  if preset and config.presets and config.presets[preset] then
+    for k,v in pairs(config.presets[preset]) do config[k]=v end
+    print("Using AUTO preset: "..tostring(preset))
+  elseif preset then
+    print("AUTO preset not found: "..tostring(preset))
+  end
   print("Starting AUTO mode (poll: "..tostring(config.pollInterval).."s, maxStress: "..tostring(config.maxStress)..")")
   local resumeFactor = config.resumeFactor or 0.8
   local restartDelay = config.autoRestartDelay or 5
@@ -191,6 +198,23 @@ elseif cmd == "describe" then
   describe_list("Absorber", absorbers)
   describe_list("Emitter", emitters)
 
+elseif cmd == "autopresets" then
+  if not config.presets then
+    print("No presets defined in config.lua")
+  else
+    print("Available AUTO presets:")
+    for name, preset in pairs(config.presets) do
+      print(" - " .. name)
+      if type(preset) == "table" then
+        for k, v in pairs(preset) do
+          print("     " .. k .. ": " .. tostring(v))
+        end
+      else
+        print("     value: " .. tostring(preset))
+      end
+    end
+  end
+
 elseif cmd == "detect" then
   local function list_addrs(name, list)
     if not list or #list == 0 then
@@ -208,3 +232,4 @@ elseif cmd == "detect" then
 else
   usage()
 end
+

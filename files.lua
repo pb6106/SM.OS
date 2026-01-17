@@ -1,10 +1,9 @@
--- Manifest of files for deploy.lua
 return {
   "dfc_controller.lua",
   "dfc_lib.lua",
   "config.lua",
   "deploy.lua",
   "README.md",
-  "serve_for_oc.ps1",
+  "dfc_ui.lua",
   "files.lua",
 }
