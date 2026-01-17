@@ -8,11 +8,15 @@ local function usage()
   print("Example: deploy.lua http://192.168.1.10:8000")
 end
 
--- Set your default repo here (GitHub shorthand `owner/repo` or a raw base URL).
--- If you prefer not to edit the file, you can still pass an argument.
 local DEFAULT_REPO = "pb6106/SM.OS" -- default repo set to your GitHub repo
 
-local base = ... or DEFAULT_REPO
+local args = {...}
+local base = args[1] or DEFAULT_REPO
+local verbose = false
+for i=1,#args do
+  if args[i] == "--verbose" or args[i] == "-v" then verbose = true end
+end
+if not base or base == "" then usage() return end
 if not base or base == "" then usage() return end
 
 -- Accept several forms for `base`:
@@ -51,13 +55,24 @@ local function fetch(path)
   else
     url = base .. "/" .. path
   end
-  local handle, err = internet.request(url)
-  if not handle then return nil, err end
-  local data = ""
-  for chunk in handle do
-    data = data .. chunk
+  if verbose then print("Fetching URL: "..url) end
+  local tries = 3
+  local lastErr
+  for attempt=1,tries do
+    local handle, err = internet.request(url)
+    if not handle then
+      lastErr = err
+      if verbose then print(" request failed: "..tostring(err).." (attempt "..attempt..")") end
+      os.sleep(0.5)
+    else
+      local data = ""
+      for chunk in handle do
+        data = data .. chunk
+      end
+      return data
+    end
   end
-  return data
+  return nil, lastErr
 end
 
 local manifest_url = nil

@@ -72,12 +72,12 @@ local function build_status()
 end
 
 local function check_safety_and_act(status)
-  return dfc.check_safety_and_act(status, config, communicator)
+  return dfc.check_safety_and_act(status, config, communicators)
 end
 
 local function monitor_loop()
   detect()
-  if not communicator then print("No dfc_communicator found") return end
+  if not communicators or #communicators == 0 then print("No dfc_communicator found") return end
   print("Starting monitor loop (poll interval: "..tostring(config.pollInterval).."s)")
   while true do
     local s = build_status()
@@ -117,7 +117,7 @@ elseif cmd == "monitor" then
   monitor_loop()
 elseif cmd == "auto" then
   detect()
-  if not communicator then print("No dfc_communicator found") return end
+  if not communicators or #communicators == 0 then print("No dfc_communicator found") return end
   print("Starting AUTO mode (poll: "..tostring(config.pollInterval).."s, maxStress: "..tostring(config.maxStress)..")")
   local resumeFactor = config.resumeFactor or 0.8
   local restartDelay = config.autoRestartDelay or 5
@@ -192,9 +192,19 @@ elseif cmd == "describe" then
   describe_list("Emitter", emitters)
 
 elseif cmd == "detect" then
-  print("Communicator: " .. tostring(communicator and communicator.address or "none"))
-  print("Injector: " .. tostring(injector and injector.address or "none"))
-  print("Absorber: " .. tostring(absorber and absorber.address or "none"))
+  local function list_addrs(name, list)
+    if not list or #list == 0 then
+      print(name .. ": none")
+      return
+    end
+    for i, p in ipairs(list) do
+      print(name .. "["..tostring(i).."]: " .. tostring(p.address or "unknown"))
+    end
+  end
+  list_addrs("Communicator", communicators)
+  list_addrs("Injector", injectors)
+  list_addrs("Absorber", absorbers)
+  list_addrs("Emitter", emitters)
 else
   usage()
 end
