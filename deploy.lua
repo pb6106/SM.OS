@@ -22,8 +22,7 @@ if not base or base == "" then usage() return end
 if not string.match(base, "^https?://") then
   -- treat as GitHub shorthand
   local parts = {}
-  for p in string.gmatch(base, "([^
-/]+)") do table.insert(parts, p) end
+  for p in string.gmatch(base, "([^/]+)") do table.insert(parts, p) end
   if #parts >= 2 then
     local owner = parts[1]
     local repo = parts[2]

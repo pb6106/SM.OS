@@ -1,7 +1,9 @@
 local component = require("component")
-local event = require("event")
 local serialization = require("serialization")
 local term = require("term")
+local dfc = require("dfc_lib")
+
+local event = require("event")
 
 -- try load config (optional)
 local config = {
@@ -28,56 +30,30 @@ local function find_component_by_type(t)
   return nil
 end
 
-local communicator = nil
-local injector = nil
-local absorber = nil
+local communicators, injectors, absorbers, emitters
 
 local function detect()
-  communicator = config.communicator and component.proxy(config.communicator) or find_component_by_type("dfc_communicator")
-  injector = config.injector and component.proxy(config.injector) or find_component_by_type("dfc_injector")
-  absorber = config.absorber and component.proxy(config.absorber) or find_component_by_type("dfc_absorber")
+  communicators, injectors, absorbers, emitters = dfc.detect(config)
 end
 
 local function analyze()
-  if not communicator then return nil end
-  local ok, data = pcall(function() return communicator.analyze() end)
-  if ok and data then return data end
-  -- fallback minimal fields
-  local status = {}
-  status.level = safe_call(communicator.getLevel)
-  status.power = safe_call(communicator.getPower)
-  status.maxPower = safe_call(communicator.getMaxPower)
-  status.charge = safe_call(communicator.getChargePercent)
-  return status
+  return dfc.analyze(communicators)
 end
 
 local function set_level(level)
-  if not communicator then return false, "no communicator" end
-  -- try numeric, then table style
-  local ok
-  ok = pcall(function() communicator.setLevel(level) end)
-  if ok then return true end
-  ok = pcall(function() communicator.setLevel({level = level}) end)
-  if ok then return true end
-  return false, "setLevel failed"
+  return dfc.set_level(communicators, level, config.primaryCommunicator)
 end
 
 local function get_absorber_status()
-  if not absorber then return nil end
-  local t = {}
-  t.level = safe_call(absorber.getLevel)
-  t.storedCoolant = safe_call(absorber.storedCoolant)
-  t.getStress = safe_call(absorber.getStress)
-  return t
+  return dfc.get_absorber_status(absorbers)
 end
 
 local function get_injector_status()
-  if not injector then return nil end
-  local t = {}
-  t.fuel = safe_call(injector.getFuel)
-  t.types = safe_call(injector.getTypes)
-  t.info = safe_call(injector.getInfo)
-  return t
+  return dfc.get_injector_status(injectors)
+end
+
+local function get_emitter_status()
+  return dfc.get_emitter_status(emitters)
 end
 
 local function pretty_print_status(s)
@@ -92,30 +68,11 @@ local function pretty_print_status(s)
 end
 
 local function build_status()
-  local s = {}
-  s.analyze = analyze()
-  s.absorber = get_absorber_status()
-  s.injector = get_injector_status()
-  return s
+  return dfc.build_status(communicators, injectors, absorbers, emitters)
 end
 
 local function check_safety_and_act(status)
-  if not status then return end
-  -- try to read stress
-  local stress
-  if status.absorber and status.absorber.getStress then
-    stress = status.absorber.getStress
-  elseif status.analyze and status.analyze.stress then
-    stress = status.analyze.stress
-  end
-  if stress and tonumber(stress) and config.maxStress and tonumber(config.maxStress) then
-    if stress >= config.maxStress then
-      print("[SAFETY] stress " .. tostring(stress) .. " >= maxStress, shutting down")
-      set_level(0)
-      return true
-    end
-  end
-  return false
+  return dfc.check_safety_and_act(status, config, communicator)
 end
 
 local function monitor_loop()
@@ -138,6 +95,7 @@ local function usage()
   print("  stop          - set reactor level to 0")
   print("  status        - print current status")
   print("  describe      - list component methods and sample (non-mutating) outputs")
+  print("  auto          - automatic safety + restart loop (opt-in behavior)")
   print("  monitor       - continuous monitoring + safety shutdown")
   print("  detect        - show which components were found")
 end
@@ -157,44 +115,81 @@ elseif cmd == "status" then
   pretty_print_status(s)
 elseif cmd == "monitor" then
   monitor_loop()
+elseif cmd == "auto" then
+  detect()
+  if not communicator then print("No dfc_communicator found") return end
+  print("Starting AUTO mode (poll: "..tostring(config.pollInterval).."s, maxStress: "..tostring(config.maxStress)..")")
+  local resumeFactor = config.resumeFactor or 0.8
+  local restartDelay = config.autoRestartDelay or 5
+  while true do
+    local s = build_status()
+    pretty_print_status(s)
+    local stopped, stress = check_safety_and_act(s)
+    if stopped then
+      print("[AUTO] Reactor shut down due to stress: "..tostring(stress))
+      -- wait for stress to drop below resume threshold
+      local resumeThreshold = (tonumber(config.resumeStress) or (tonumber(config.maxStress) * resumeFactor))
+      print("[AUTO] waiting until stress < "..tostring(resumeThreshold))
+      while true do
+        os.sleep(tonumber(config.pollInterval) or 2)
+        local s2 = build_status()
+        local curStress = nil
+        if s2.absorber and s2.absorber.getStress then curStress = s2.absorber.getStress
+        elseif s2.analyze and s2.analyze.stress then curStress = s2.analyze.stress end
+        if curStress and tonumber(curStress) and tonumber(curStress) < resumeThreshold then
+          print("[AUTO] stress recovered ("..tostring(curStress)..") — waiting "..tostring(restartDelay).."s then attempting restart")
+          os.sleep(restartDelay)
+          local ok, err = set_level(config.targetLevel)
+          if ok then print("[AUTO] restarted to level "..tostring(config.targetLevel)) else print("[AUTO] restart failed: "..tostring(err)) end
+          break
+        else
+          print("[AUTO] still high: "..tostring(curStress))
+        end
+      end
+    end
+    os.sleep(tonumber(config.pollInterval) or 2)
+  end
 elseif cmd == "describe" then
   -- safe introspection helper: lists methods for detected components and
   -- attempts to call non-mutating getter-like methods to show sample outputs.
   detect()
-  local function describe_component(name, proxy)
-    if not proxy then
+  local function describe_list(name, list)
+    if not list or #list == 0 then
       print(name .. ": none")
       return
     end
-    print("--- " .. name .. " (" .. tostring(proxy.address) .. ") ---")
-    local methods = component.methods(proxy.address) or {}
-    table.sort(methods)
-    for _, m in ipairs(methods) do
-      -- skip likely-mutating methods (set/activate/start/stop/inject/eject/remove/add)
-      if not (string.sub(m,1,3) == "set" or string.find(m, "inject") or string.find(m, "eject") or string.find(m, "remove") or string.find(m, "add") or string.find(m, "start") or string.find(m, "activate") or string.find(m, "stop")) then
-        io.write(" - " .. m .. ": ")
-        local ok, res = pcall(function()
-          -- attempt calling without arguments; many component getters work this way
-          return proxy[m]()
-        end)
-        if ok then
-          if type(res) == "table" then
-            print(serialization.serialize(res))
-          else
-            print(tostring(res))
-          end
-        else
-          print("<unreadable or requires args>")
-        end
+    for i, proxy in ipairs(list) do
+      if not proxy then
+        print(name .. "["..tostring(i).."]: nil")
       else
-        print(" - " .. m .. ": <skipped (mutating)>")
+        print("--- " .. name .. "["..tostring(i) .. "] (" .. tostring(proxy.address) .. ") ---")
+        local methods = component.methods(proxy.address) or {}
+        table.sort(methods)
+        for _, m in ipairs(methods) do
+          if not (string.sub(m,1,3) == "set" or string.find(m, "inject") or string.find(m, "eject") or string.find(m, "remove") or string.find(m, "add") or string.find(m, "start") or string.find(m, "activate") or string.find(m, "stop")) then
+            io.write(" - " .. m .. ": ")
+            local ok, res = pcall(function() return proxy[m]() end)
+            if ok then
+              if type(res) == "table" then
+                print(serialization.serialize(res))
+              else
+                print(tostring(res))
+              end
+            else
+              print("<unreadable or requires args>")
+            end
+          else
+            print(" - " .. m .. ": <skipped (mutating)>")
+          end
+        end
       end
     end
   end
 
-  describe_component("Communicator", communicator)
-  describe_component("Injector", injector)
-  describe_component("Absorber", absorber)
+  describe_list("Communicator", communicators)
+  describe_list("Injector", injectors)
+  describe_list("Absorber", absorbers)
+  describe_list("Emitter", emitters)
 
 elseif cmd == "detect" then
   print("Communicator: " .. tostring(communicator and communicator.address or "none"))
