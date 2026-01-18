@@ -5,6 +5,9 @@ local dfc = require("dfc_lib")
 
 local event = require("event")
 
+-- try load config (optional)
+-- (config already loaded above near the top to allow early use)
+
 -- discovered remote display agents (address->timestamp)
 local discoveredAgents = {}
 
