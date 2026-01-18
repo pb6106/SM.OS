@@ -4,20 +4,32 @@ local term = require("term")
 local fs = require("filesystem")
 
 local function usage()
-  print("Usage: deploy.lua <base_url>")
-  print("Example: deploy.lua http://192.168.1.10:8000")
+  print("Usage: deploy.lua [role] [base]")
+  print("  role: one of controller, emitters, core, stabilizers (optional)")
+  print("  base: repo shorthand owner/repo[/branch[/path]] or full URL (optional)")
+  print("Examples:")
+  print("  deploy.lua controller                         # uses files_controller.lua from default repo")
+  print("  deploy.lua emitters http://host:8000          # fetch files_screen_emitters.lua from host")
+  print("  deploy.lua pb6106/SM.OS                       # fetch top-level files.lua from GitHub repo")
 end
 
 local DEFAULT_REPO = "pb6106/SM.OS" -- default repo set to your GitHub repo
 
 local args = {...}
-local base = args[1] or DEFAULT_REPO
 local verbose = false
+local role = nil
+local base = nil
 for i=1,#args do
-  if args[i] == "--verbose" or args[i] == "-v" then verbose = true end
+  local a = args[i]
+  if a == "--verbose" or a == "-v" then verbose = true
+  elseif string.sub(a,1,7) == "--role=" then role = string.sub(a,8)
+  elseif a == "controller" or a == "emitters" or a == "core" or a == "stabilizers" or a == "stabilizer" then
+    role = (a == "stabilizer") and "stabilizers" or a
+  elseif not base then
+    base = a
+  end
 end
-if not base or base == "" then usage() return end
-if not base or base == "" then usage() return end
+if not base or base == "" then base = DEFAULT_REPO end
 
 -- Accept several forms for `base`:
 -- 1) full URL to a directory on a raw host, e.g. https://example.com/path
@@ -75,13 +87,28 @@ local function fetch(path)
   return nil, lastErr
 end
 
+-- choose manifest filename based on role
+local role_to_manifest = {
+  controller = "files_controller.lua",
+  emitters = "files_screen_emitters.lua",
+  core = "files_screen_core.lua",
+  stabilizers = "files_screen_stabilizers.lua",
+}
+
 local manifest_url = nil
-if string.match(base, "files.lua$") then
-  manifest_url = base
-  print("Fetching manifest from "..manifest_url)
+-- if user passed a role, prefer the role manifest
+if role and role_to_manifest[role] then
+  manifest_url = role_to_manifest[role]
+  print("Fetching file list for role '"..role.."' from "..base.."/"..manifest_url)
 else
-  print("Fetching file list from "..base.."/files.lua")
-  manifest_url = "files.lua"
+  -- if base already pointed to a .lua file, use it as manifest, otherwise use top-level files.lua
+  if string.match(base, "%.lua$") then
+    manifest_url = base
+    print("Fetching manifest from "..manifest_url)
+  else
+    print("Fetching file list from "..base.."/files.lua")
+    manifest_url = "files.lua"
+  end
 end
 
 local listBody, err = fetch(manifest_url)
