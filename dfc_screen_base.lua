@@ -46,8 +46,14 @@ local function handle_modem_message(_, _, sender, port, _, raw)
     local path = msg.args and msg.args.path
     if path then pcall(function() if dfc_display then dfc_display.show_art_from_file(path, msg.args.duration or 5, msg.args.opts) end end) end
   elseif msg.cmd == "status_update" then
-    local status = msg.args and msg.args.status
-    if status then pcall(M.render, status) end
+    local args = msg.args or {}
+    if args.summary and type(args.summary) == "table" then
+      -- display the provided summary lines directly
+      pcall(M.show_lines, args.summary, 0, {})
+    else
+      local status = args.status
+      if status then pcall(M.render, status) end
+    end
   elseif msg.cmd == "register_request" then
     send_register(sender)
   end
@@ -65,8 +71,8 @@ function M.start(token, port, controllerAddr, screenUUID)
     return true
   end
 
-  send_register(controllerAddr)
   print(string.format("screen agent starting on port %d (token %s)", PORT, TOKEN and "set" or "none"))
+  local registered = false
 
   -- Supervisory loop: keep running and handle modem messages.
   while true do
@@ -76,6 +82,11 @@ function M.start(token, port, controllerAddr, screenUUID)
       if not ok then
         os.sleep(2)
         goto continue
+      end
+      -- once modem is available, send registration
+      if not registered then
+        pcall(send_register, controllerAddr)
+        registered = true
       end
     end
     -- block waiting for modem messages, handle safely

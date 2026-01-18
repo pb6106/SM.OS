@@ -147,7 +147,9 @@ local function send_status_broadcast(status)
     local modem = component.proxy((next(component.list("modem"))))
     local port = tonumber(config.displayPort) or 12345
     local token = config.displayToken
-    local msg = { token = token, cmd = "status_update", args = { status = status } }
+    -- send a serializable summary rather than raw status (which may contain proxies)
+    local summary = status_to_lines(status)
+    local msg = { token = token, cmd = "status_update", args = { summary = summary } }
     local okSer, s = pcall(serialization.serialize, msg)
     if not okSer then return false end
     local targets = {}
@@ -204,6 +206,7 @@ local function monitor_loop()
     -- broadcast status to displays/agents
     local lines = status_to_lines(s)
     pcall(send_art_broadcast, lines, 0)
+    pcall(send_status_broadcast, s)
     local stopped = check_safety_and_act(s)
     if stopped then break end
     os.sleep(tonumber(config.pollInterval) or 2)
@@ -256,6 +259,7 @@ elseif cmd == "auto" then
     -- broadcast status to displays/agents while in AUTO
     local lines = status_to_lines(s)
     pcall(send_art_broadcast, lines, 0)
+    pcall(send_status_broadcast, s)
     local stopped, stress = check_safety_and_act(s)
     if stopped then
       print("[AUTO] Reactor shut down due to stress: "..tostring(stress))
