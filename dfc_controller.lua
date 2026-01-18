@@ -5,6 +5,49 @@ local dfc = require("dfc_lib")
 
 local event = require("event")
 
+-- discovered remote display agents (address->timestamp)
+local discoveredAgents = {}
+
+-- listen for agent registrations
+local function agent_message_handler(_, _, sender, port, _, raw)
+  if not raw then return end
+  local ok, msg = pcall(serialization.unserialize, raw)
+  if not ok or type(msg) ~= "table" then return end
+  if msg.cmd == "register" then
+    discoveredAgents[sender] = os.time()
+    print("Registered display agent: "..tostring(sender))
+  end
+end
+
+pcall(function()
+  for p in component.list("modem") do
+    local modem = component.proxy(p)
+    pcall(modem.open, config.displayPort or 12345)
+  end
+  event.listen("modem_message", agent_message_handler)
+end)
+
+-- remove stale agents older than expiry seconds
+local function prune_agents()
+  local expiry = tonumber(config.agentExpiry) or 300
+  local now = os.time()
+  for addr, t in pairs(discoveredAgents) do
+    if now - t > expiry then discoveredAgents[addr] = nil end
+  end
+end
+
+-- CLI helper to list discovered agents
+local function list_agents()
+  prune_agents()
+  print("Discovered display agents:")
+  local any = false
+  for addr, t in pairs(discoveredAgents) do
+    print(" - "..addr.." (last seen "..tostring(os.date("%Y-%m-%d %H:%M:%S", t))..")")
+    any = true
+  end
+  if not any then print(" (none)") end
+end
+
 -- try load config (optional)
 local config = {
   targetLevel = 75,
@@ -67,6 +110,82 @@ local function pretty_print_status(s)
   end
 end
 
+-- optional local display helper (may not exist on controller)
+local ok_display, dfc_display = pcall(require, "dfc_display")
+
+local function send_art_broadcast(lines, duration)
+  -- show locally if available
+  if ok_display and dfc_display then
+    local localOpts = { fg = config.displayFG or 0xFFFFFF, bg = config.displayBG or 0x000000 }
+    if config.controllerScreen then localOpts.screen = config.controllerScreen end
+    pcall(dfc_display.show_art, lines, duration, localOpts)
+  end
+  -- send to configured remote agents via modem
+  if component and next(component.list("modem")) then
+    local modem = component.proxy((next(component.list("modem"))))
+    local port = tonumber(config.displayPort) or 12345
+    local token = config.displayToken
+    local msg = { token = token, cmd = "show_art", args = { lines = lines, duration = duration, opts = {} } }
+    local okSer, s = pcall(serialization.serialize, msg)
+    if not okSer then return false, "serialize_failed" end
+    local targets = {}
+    if config.displayAgents and type(config.displayAgents) == "table" and #config.displayAgents > 0 then
+      targets = config.displayAgents
+    else
+      for addr,_ in pairs(discoveredAgents) do targets[#targets+1] = addr end
+    end
+    for _, addr in ipairs(targets) do
+      pcall(modem.open, port)
+      pcall(modem.send, addr, port, s)
+    end
+  end
+  return true
+end
+
+local function send_status_broadcast(status)
+  if component and next(component.list("modem")) then
+    local modem = component.proxy((next(component.list("modem"))))
+    local port = tonumber(config.displayPort) or 12345
+    local token = config.displayToken
+    local msg = { token = token, cmd = "status_update", args = { status = status } }
+    local okSer, s = pcall(serialization.serialize, msg)
+    if not okSer then return false end
+    local targets = {}
+    if config.displayAgents and type(config.displayAgents) == "table" and #config.displayAgents > 0 then
+      targets = config.displayAgents
+    else
+      for addr,_ in pairs(discoveredAgents) do targets[#targets+1] = addr end
+    end
+    for _, addr in ipairs(targets) do pcall(modem.open, port); pcall(modem.send, addr, port, s) end
+  end
+  return true
+end
+
+local function status_to_lines(s)
+  local lines = {}
+  if s.analyze and s.analyze.level then
+    lines[#lines+1] = string.format("Level: %s", tostring(s.analyze.level))
+  end
+  if s.analyze and s.analyze.stress then
+    lines[#lines+1] = string.format("Stress: %s", tostring(s.analyze.stress))
+  end
+  if s.absorber and type(s.absorber) == "table" then
+    if s.absorber.getStress then lines[#lines+1] = string.format("Absorber stress: %s", tostring(s.absorber.getStress)) end
+  end
+  if s.injector and type(s.injector) == "table" then
+    if s.injector.getAmount then lines[#lines+1] = string.format("Injector amount: %s", tostring(s.injector.getAmount)) end
+  end
+  if s.emitters and type(s.emitters) == "table" and #s.emitters > 0 then
+    for i,e in ipairs(s.emitters) do
+      local prefix = string.format("Emitter[%d]:", i)
+      if e.address then lines[#lines+1] = prefix .. " " .. tostring(e.address) end
+    end
+  end
+  -- fallback: serialize short summary
+  if #lines == 0 then lines[#lines+1] = serialization.serialize(s) end
+  return lines
+end
+
 local function build_status()
   return dfc.build_status(communicators, injectors, absorbers, emitters)
 end
@@ -82,6 +201,9 @@ local function monitor_loop()
   while true do
     local s = build_status()
     pretty_print_status(s)
+    -- broadcast status to displays/agents
+    local lines = status_to_lines(s)
+    pcall(send_art_broadcast, lines, 0)
     local stopped = check_safety_and_act(s)
     if stopped then break end
     os.sleep(tonumber(config.pollInterval) or 2)
@@ -131,9 +253,26 @@ elseif cmd == "auto" then
   while true do
     local s = build_status()
     pretty_print_status(s)
+    -- broadcast status to displays/agents while in AUTO
+    local lines = status_to_lines(s)
+    pcall(send_art_broadcast, lines, 0)
     local stopped, stress = check_safety_and_act(s)
     if stopped then
       print("[AUTO] Reactor shut down due to stress: "..tostring(stress))
+        -- show configured ASCII art on monitors/agents if requested
+        if config.displayArtFile then
+          local f = io.open(config.displayArtFile, "r")
+          if f then
+            local lines = {}
+            for line in f:lines() do lines[#lines+1] = line end
+            f:close()
+            local dur = tonumber(config.displayDuration) or 10
+            local ok, err = send_art_broadcast(lines, dur)
+            if ok then print("[AUTO] display sent to agents/local monitors") else print("[AUTO] display failed: "..tostring(err)) end
+          else
+            print("[AUTO] display file not found: "..tostring(config.displayArtFile))
+          end
+        end
       -- wait for stress to drop below resume threshold
       local resumeThreshold = (tonumber(config.resumeStress) or (tonumber(config.maxStress) * resumeFactor))
       print("[AUTO] waiting until stress < "..tostring(resumeThreshold))
@@ -229,6 +368,30 @@ elseif cmd == "detect" then
   list_addrs("Injector", injectors)
   list_addrs("Absorber", absorbers)
   list_addrs("Emitter", emitters)
+elseif cmd == "listagents" then
+  list_agents()
+elseif cmd == "sendart" then
+  local addr = select(2, ...) or args and args[2] or nil
+  local file = select(3, ...) or args and args[3] or nil
+  if not addr or not file then
+    print("Usage: sendart <address> <file> [duration] [token] [port]")
+  else
+    local duration = tonumber(select(4, ...)) or tonumber((args and args[4])) or 5
+    local token = select(5, ...) or (args and args[5])
+    local port = tonumber(select(6, ...)) or tonumber((args and args[6])) or (config.displayPort or 12345)
+    local lines = {}
+    local f, ferr = io.open(file, "r")
+    if not f then print("Failed to open file: "..tostring(ferr)) return end
+    for line in f:lines() do lines[#lines+1] = line end
+    f:close()
+    local msg = { token = token, cmd = "show_art", args = { lines = lines, duration = duration, opts = {} } }
+    local s_ok, s = pcall(serialization.serialize, msg)
+    if not s_ok then print("Failed to serialize message") return end
+    local modem = component.modem
+    pcall(modem.open, port)
+    local ok = pcall(modem.send, addr, port, s)
+    if ok then print("Sent art to "..addr.." on port "..tostring(port)) else print("Failed to send to "..addr) end
+  end
 else
   usage()
 end

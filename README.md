@@ -1,5 +1,135 @@
 # DFC OpenComputers Controller
 
+This repository contains the DFC reactor controller and small display agents used to show reactor state on three independent monitors (one program per monitor).
+
+Goals
+- Keep each screen driven by a separate, self-contained agent program so one failure doesn't take down the whole system.
+- Controller (`dfc_controller.lua`) discovers agents, broadcasts status, and sends alert art during AUTO shutdowns.
+
+Files of interest
+- `dfc_controller.lua`  — main controller CLI
+- `dfc_lib.lua`         — safe wrappers for component calls
+- `dfc_display.lua`     — helpers to render ASCII art to local monitors
+- `dfc_display_agent.lua` / `dfc_screen_*` — modem-based per-screen agents/templates
+- `dfc_screen_base.lua` — shared agent base; `dfc_screen_emitters.lua`, `dfc_screen_core.lua`, `dfc_screen_stabilizers.lua`
+- `deploy.lua`, `files.lua` — deployment helper
+- `config.lua`          — local configuration values
+
+Requirements
+- OpenComputers computers with `internet` or `modem` cards for networking between machines.
+- Each screen machine needs a GPU + screen and a modem.
+
+Three-monitor topology
+- Controller machine: runs `dfc_controller.lua`, has a modem.
+- Screen machines (3): each runs one of the per-screen agents below and drives a single physical monitor:
+  - `dfc_screen_emitters.lua`     — shows 3 `dfc_emitter` blocks
+  - `dfc_screen_core.lua`         — shows general core info
+  - `dfc_screen_stabilizers.lua`  — shows `dfc_communicator` / stabilizer info
+
+Quick connect & run
+1. Choose a shared modem port and token (example):
+   - Port: `12345`
+   - Token: `secret-token`
+
+2. Copy these files to each machine as appropriate:
+   - Controller: `dfc_controller.lua`, `dfc_lib.lua`, `config.lua`, `dfc_display.lua`
+   - Each screen server: `dfc_display.lua`, `dfc_screen_base.lua`, plus the matching per-screen file (emitters/core/stabilizers).
+
+3. Start the per-screen agents on their machines (replace `<CONTROLLER_ADDR>` if you know it; optional):
+```lua
+-- emitter monitor machine
+dfc_screen_emitters.lua secret-token 12345 <CONTROLLER_ADDR>
+
+-- core monitor machine
+dfc_screen_core.lua secret-token 12345 <CONTROLLER_ADDR>
+
+-- stabilizer monitor machine
+dfc_screen_stabilizers.lua secret-token 12345 <CONTROLLER_ADDR>
+```
+
+4. Start the controller on the controller machine:
+```lua
+-- start monitoring (controller will discover agents automatically)
+dfc_controller.lua monitor
+
+-- or start automatic safety mode
+dfc_controller.lua auto
+```
+
+Per-machine deploy via `deploy.lua`
+-- If you want to deploy only the controller files to the controller machine:
+```lua
+-- from the target OpenComputers machine run:
+deploy.lua https://raw.githubusercontent.com/<owner>/<repo>/main/files_controller.lua
+```
+
+-- To deploy the emitter-screen files to its machine:
+```lua
+deploy.lua https://raw.githubusercontent.com/<owner>/<repo>/main/files_screen_emitters.lua
+```
+
+-- To deploy the core-screen files to its machine:
+```lua
+deploy.lua https://raw.githubusercontent.com/<owner>/<repo>/main/files_screen_core.lua
+```
+
+-- To deploy the stabilizer-screen files to its machine:
+```lua
+deploy.lua https://raw.githubusercontent.com/<owner>/<repo>/main/files_screen_stabilizers.lua
+```
+
+Note: `deploy.lua` fetches the manifest (the `files_*.lua` file) and then downloads each file listed in that manifest into the current working directory on the machine where you run `deploy.lua`.
+
+Controller commands you will use
+- `dfc_controller.lua listagents` — show discovered display agents and last-seen timestamp
+- `dfc_controller.lua sendart <addr> <file> [duration] [token] [port]` — send an art file to a specific agent
+- `dfc_controller.lua detect|describe|status|start|stop|monitor|auto` — controller operations
+
+Recommended `config.lua` entries
+```lua
+displayPort = 12345
+displayToken = "secret-token"
+-- optional static agent addresses (controller will prefer these)
+displayAgents = {
+  "addr_emitter_server",
+  "addr_core_server",
+  "addr_stabilizer_server",
+}
+
+-- AUTO alert art file
+displayArtFile = "art/warning.txt"
+displayDuration = 10
+
+-- how long to keep agents before pruning
+agentExpiry = 300
+```
+
+Testing checklist
+1. Start all three agents, then run on controller:
+   ```
+   dfc_controller.lua listagents
+   ```
+   You should see three agents listed.
+2. Confirm periodic status appears on each screen (monitor mode broadcasts updates automatically).
+3. Trigger an alert art test:
+   ```
+   dfc_controller.lua sendart <agent_addr> art/warning.txt 5 secret-token 12345
+   ```
+4. Verify each agent restores its normal status display after the alert expires.
+
+Robustness notes
+- Each screen agent runs a supervised loop and will recover from transient modem or handler errors.
+- Agents are independent: one agent crashing won't stop others or the controller.
+- Use `displayToken` for simple auth. For stronger security, request controller-side token verification and signed messages.
+
+Next steps (optional)
+- Automatically map agents to roles (store `info.role` from registrations and show in `listagents`).
+- Controller-side registration token verification.
+- Per-agent templates with multiple pages / gauges.
+
+If you want, I can add `listagents` role output and controller-side token checks next — tell me which.
+# DFC OpenComputers Controller
+
 Files added:
 - `dfc_controller.lua` - main controller CLI script for OpenComputers
 - `config.lua` - optional config (copy and edit values as needed)
