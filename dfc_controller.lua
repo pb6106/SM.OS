@@ -5,9 +5,15 @@ local dfc = require("dfc_lib")
 
 local event = require("event")
 
--- try load config (optional)
--- (config already loaded above near the top to allow early use)
-
+local config = {
+  targetLevel = 75,
+  pollInterval = 2,
+  maxStress = 0.9,
+  communicator = nil,
+  injector = nil,
+  absorber = nil,
+}
+pcall(function() local c = dofile("config.lua"); for k,v in pairs(c) do config[k]=v end end)
 -- discovered remote display agents (address->timestamp)
 local discoveredAgents = {}
 
@@ -51,16 +57,6 @@ local function list_agents()
   if not any then print(" (none)") end
 end
 
--- try load config (optional)
-local config = {
-  targetLevel = 75,
-  pollInterval = 2,
-  maxStress = 0.9,
-  communicator = nil,
-  injector = nil,
-  absorber = nil,
-}
-pcall(function() local c = dofile("config.lua"); for k,v in pairs(c) do config[k]=v end end)
 
 local function safe_call(fn, ...)
   if not fn then return nil end
