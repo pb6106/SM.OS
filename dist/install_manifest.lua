@@ -1,0 +1,15 @@
+return {
+  'main.lua',
+  'app.lua',
+  'core/reactor.lua',
+  'display.lua',
+  'ui/reactor_screen.lua',
+  'adapters/ntm_adapter.lua',
+  'adapters/gpu_adapter.lua',
+  'adapters/network_adapter.lua',
+  'files.lua',
+  'configs/primary_config.lua',
+  'deploy/install.lua',
+  'deploy/install_from_github.lua',
+  'deploy/install_package_runner.lua',
+}
